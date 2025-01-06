@@ -1,5 +1,11 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
+
+let position : {x:0,y:0} = {
+  x: 0,
+  y: 0
+};
 
 export function previewAsyncAPI(context: vscode.ExtensionContext) {
  return async (uri: vscode.Uri) => {
@@ -49,8 +55,25 @@ export function openAsyncAPI(context: vscode.ExtensionContext, uri: vscode.Uri) 
       retainContextWhenHidden: true,
       localResourceRoots,
     });
+
   panel.title = path.basename(uri.fsPath);
-  panel.webview.html = getWebviewContent(context, panel.webview, uri);
+  panel.webview.html = getWebviewContent(context, panel.webview, uri, position);
+          
+  panel.webview.onDidReceiveMessage(
+    message => {
+      switch (message.type) {
+        case 'position':{
+          position = {
+            x: message.scrollX,
+            y: message.scrollY
+          };
+          
+        }
+      }
+    },
+    undefined,
+    context.subscriptions
+  );
 
   panel.onDidDispose(() => {
     delete openAsyncapiFiles[uri.fsPath];
@@ -58,22 +81,23 @@ export function openAsyncAPI(context: vscode.ExtensionContext, uri: vscode.Uri) 
   openAsyncapiFiles[uri.fsPath] = panel;
 }
 
-async function promptForAsyncapiFile() {
+export async function promptForAsyncapiFile() {
   if (isAsyncAPIFile(vscode.window.activeTextEditor?.document)) {
     return vscode.window.activeTextEditor?.document.uri;
   }
-  return await vscode.window.showOpenDialog({
+  const uris = await vscode.window.showOpenDialog({
     canSelectFiles: true,
     canSelectFolders: false,
     canSelectMany: false,
     openLabel: 'Open AsyncAPI file',
     filters: {
-      AsyncAPI: ['yml', 'yaml', 'json'],
+      asyncAPI: ['yml', 'yaml', 'json'],
     },
   });
+  return uris?.[0];
 }
 
-function getWebviewContent(context: vscode.ExtensionContext, webview: vscode.Webview, asyncapiFile: vscode.Uri) {
+function getWebviewContent(context: vscode.ExtensionContext, webview: vscode.Webview, asyncapiFile: vscode.Uri, position: {x:0,y:0}) {
   const asyncapiComponentJs = webview.asWebviewUri(
     vscode.Uri.joinPath(context.extensionUri, 'dist/node_modules/@asyncapi/react-component/browser/standalone/index.js')
   );
@@ -82,11 +106,26 @@ function getWebviewContent(context: vscode.ExtensionContext, webview: vscode.Web
   );
   const asyncapiWebviewUri = webview.asWebviewUri(asyncapiFile);
   const asyncapiBasePath = asyncapiWebviewUri.toString().replace('%2B', '+'); // this is loaded by a different library so it requires unescaping the + character
+  const asyncapiContent = fs.readFileSync(asyncapiFile.fsPath, 'utf-8');
+
   const html = `
   <!DOCTYPE html>
   <html>
     <head>
       <link rel="stylesheet" href="${asyncapiComponentCss}">
+      <style> 
+      html{
+        scroll-behavior: smooth;
+      }
+      body {
+        color: #121212;
+        background-color: #fff;
+        word-wrap: break-word;
+      }
+      h1 {
+        color: #121212;
+      }
+      </style>
     </head>
     <body x-timestamp="${Date.now()}">
       
@@ -94,8 +133,9 @@ function getWebviewContent(context: vscode.ExtensionContext, webview: vscode.Web
   
       <script src="${asyncapiComponentJs}"></script>
       <script>
+        const vscode = acquireVsCodeApi();
         AsyncApiStandalone.render({
-          schema: {
+          schema:  {
             url: '${asyncapiWebviewUri}',
             options: { method: "GET", mode: "cors" },
           },
@@ -107,6 +147,19 @@ function getWebviewContent(context: vscode.ExtensionContext, webview: vscode.Web
             parserOptions: { path: '${asyncapiBasePath}' }
           },
         }, document.getElementById('asyncapi'));
+        
+        window.addEventListener('scrollend', event => {
+                vscode.postMessage({
+                  type: 'position',
+                  scrollX: window.scrollX || 0,
+                  scrollY: window.scrollY || 0
+                });
+        });
+        
+        window.addEventListener("load", (event) => {
+          setTimeout(()=>{window.scrollBy('${position.x}','${position.y}')},1000)
+        });
+        
       </script>
   
     </body>
